@@ -139,13 +139,15 @@ func loadEnvFile() error {
 func loadConfigFromEnv() trading.Config {
 	config := trading.Config{
 		// Default values for 1M Pattern + Volume + Delta strategy
-		Symbol:        "XPL_USDC_PERP",
-		Interval:      "1m", // 1 minute timeframe
-		Quantity:      0,    // 不再使用，完全基于账户余额和杠杆动态计算
-		StopLossPct:   0.25, // 0.25% stop loss (as per spec)
-		TakeProfitPct: 0.6,  // 0.6% take profit (as per spec)
-		Leverage:      1,    // Default to no leverage
-		MaxPosPct:     0.02, // 2% 最大仓位比例 (as per spec)
+		Symbol:           "XPL_USDC_PERP",
+		Interval:         "1m",                            // 1 minute timeframe
+		Quantity:         0,                               // 不再使用，完全基于账户余额和杠杆动态计算
+		StopLossPct:      0.25,                            // 0.25% stop loss (as per spec)
+		TakeProfitPct:    0.6,                             // 0.6% take profit (as per spec)
+		Leverage:         1,                               // Default to no leverage
+		MaxPosPct:        0.02,                            // 2% 最大仓位比例 (as per spec)
+		TelegramBotToken: os.Getenv("TELEGRAM_BOT_TOKEN"), // Telegram Bot Token
+		TelegramChatID:   os.Getenv("TELEGRAM_CHAT_ID"),   // Telegram Chat ID
 	}
 
 	// Load from environment variables

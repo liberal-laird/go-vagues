@@ -13,6 +13,7 @@ import (
 	"vagues-go/src/backpack"
 	"vagues-go/src/indicators"
 	"vagues-go/src/models"
+	"vagues-go/src/notify"
 	"vagues-go/src/strategy"
 )
 
@@ -27,8 +28,9 @@ type TradingSystem struct {
 	quantity      float64 // 保留用于兼容
 	stopLossPct   float64
 	takeProfitPct float64
-	leverage      int     // 杠杆倍数
-	maxPosPct     float64 // 单笔最大仓位占总权益比例
+	leverage      int                      // 杠杆倍数
+	maxPosPct     float64                  // 单笔最大仓位占总权益比例
+	notifier      *notify.TelegramNotifier // Telegram 通知器
 	// Delta tracking
 	deltaHistory []models.Delta // History of delta values
 }
@@ -43,6 +45,8 @@ type Config struct {
 	Leverage          int     // 杠杆倍数（可选，默认为1，即无杠杆）
 	MaxPosPct         float64 // 单笔最大仓位占总权益比例（默认2%）
 	MaxTradingSymbols int     // 最大监控交易对数量（默认20，0表示不限制）
+	TelegramBotToken  string  // Telegram Bot Token
+	TelegramChatID    string  // Telegram Chat ID
 }
 
 // NewTradingSystem creates a new trading system
@@ -59,6 +63,9 @@ func NewTradingSystem(client *backpack.Client, config Config) *TradingSystem {
 		maxPosPct = 0.02 // 2%
 	}
 
+	// 初始化 Telegram 通知器
+	telegramNotifier := notify.NewTelegramNotifier(config.TelegramBotToken, config.TelegramChatID)
+
 	return &TradingSystem{
 		client:        client,
 		strategy:      strategy.NewPatternVolumeDeltaStrategy(),
@@ -71,6 +78,7 @@ func NewTradingSystem(client *backpack.Client, config Config) *TradingSystem {
 		takeProfitPct: config.TakeProfitPct,
 		leverage:      leverage,
 		maxPosPct:     maxPosPct,
+		notifier:      telegramNotifier,
 		deltaHistory:  make([]models.Delta, 0),
 	}
 }
@@ -376,6 +384,19 @@ func (ts *TradingSystem) handleLongEntry(ctx context.Context, data models.Market
 	log.Printf("✅ 开多仓成功 - API订单ID: %s, 本地订单ID: %s, 价格: %.4f, 数量: %.4f, 止损: %.4f, 止盈: %.4f",
 		orderResp.ID, orderID, data.KLine.Close, quantity, stopLoss, takeProfit)
 
+	// 发送 Telegram 通知
+	if ts.notifier != nil {
+		_ = ts.notifier.SendOrderNotification(
+			"开多",
+			futuresSymbol,
+			quantityStr,
+			fmt.Sprintf("%.4f", data.KLine.Close),
+			stopLossStr,
+			takeProfitStr,
+			orderResp.ID,
+		)
+	}
+
 	return nil
 }
 
@@ -450,6 +471,19 @@ func (ts *TradingSystem) handleShortEntry(ctx context.Context, data models.Marke
 	log.Printf("✅ 开空仓成功 - API订单ID: %s, 本地订单ID: %s, 价格: %.4f, 数量: %.4f, 止损: %.4f, 止盈: %.4f",
 		orderResp.ID, orderID, data.KLine.Close, quantity, stopLoss, takeProfit)
 
+	// 发送 Telegram 通知
+	if ts.notifier != nil {
+		_ = ts.notifier.SendOrderNotification(
+			"开空",
+			futuresSymbol,
+			quantityStr,
+			fmt.Sprintf("%.4f", data.KLine.Close),
+			stopLossStr,
+			takeProfitStr,
+			orderResp.ID,
+		)
+	}
+
 	return nil
 }
 
@@ -477,6 +511,18 @@ func (ts *TradingSystem) handleLongExit(ctx context.Context, data models.MarketD
 			} else {
 				log.Printf("✅ 平多仓成功 - API订单ID: %s, 本地订单ID: %s, 价格: %.4f, 盈亏: %.4f",
 					orderResp.ID, order.ID, data.KLine.Close, order.PnL)
+
+				// 发送 Telegram 通知
+				if ts.notifier != nil {
+					_ = ts.notifier.SendCloseNotification(
+						futuresSymbol,
+						fmt.Sprintf("%.4f", order.Quantity),
+						fmt.Sprintf("%.4f", data.KLine.Close),
+						fmt.Sprintf("%.4f", order.PnL),
+						fmt.Sprintf("%.2f%%", order.PnLPercent),
+						orderResp.ID,
+					)
+				}
 			}
 		}
 	}
@@ -507,6 +553,18 @@ func (ts *TradingSystem) handleShortExit(ctx context.Context, data models.Market
 			} else {
 				log.Printf("✅ 平空仓成功 - API订单ID: %s, 本地订单ID: %s, 价格: %.4f, 盈亏: %.4f",
 					orderResp.ID, order.ID, data.KLine.Close, order.PnL)
+
+				// 发送 Telegram 通知
+				if ts.notifier != nil {
+					_ = ts.notifier.SendCloseNotification(
+						futuresSymbol,
+						fmt.Sprintf("%.4f", order.Quantity),
+						fmt.Sprintf("%.4f", data.KLine.Close),
+						fmt.Sprintf("%.4f", order.PnL),
+						fmt.Sprintf("%.2f%%", order.PnLPercent),
+						orderResp.ID,
+					)
+				}
 			}
 		}
 	}

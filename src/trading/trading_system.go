@@ -2,6 +2,7 @@ package trading
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -34,13 +35,14 @@ type TradingSystem struct {
 
 // Config holds trading system configuration
 type Config struct {
-	Symbol        string
-	Interval      string
-	Quantity      float64 // 保留用于兼容，实际使用动态计算
-	StopLossPct   float64
-	TakeProfitPct float64
-	Leverage      int     // 杠杆倍数（可选，默认为1，即无杠杆）
-	MaxPosPct     float64 // 单笔最大仓位占总权益比例（默认2%）
+	Symbol            string
+	Interval          string
+	Quantity          float64 // 保留用于兼容，实际使用动态计算
+	StopLossPct       float64
+	TakeProfitPct     float64
+	Leverage          int     // 杠杆倍数（可选，默认为1，即无杠杆）
+	MaxPosPct         float64 // 单笔最大仓位占总权益比例（默认2%）
+	MaxTradingSymbols int     // 最大监控交易对数量（默认20，0表示不限制）
 }
 
 // NewTradingSystem creates a new trading system
@@ -77,7 +79,10 @@ func NewTradingSystem(client *backpack.Client, config Config) *TradingSystem {
 func (ts *TradingSystem) Run(ctx context.Context) error {
 	log.Printf("启动交易系统 - 交易对: %s, 周期: %s, 杠杆: %dx", ts.symbol, ts.interval, ts.leverage)
 
-	// 设置杠杆
+	// 注意：杠杆设置已移至 MultiSymbolMonitor，单交易对模式仍需要设置
+	// 在多交易对模式下，这里不会重复设置（因为已经在 MultiSymbolMonitor 中设置过）
+	// 但为了兼容单交易对模式，这里仍然保留设置逻辑
+	// 如果是在多交易对模式下，可以添加一个标志来跳过设置
 	if ts.leverage > 1 {
 		log.Printf("正在设置杠杆为 %dx...", ts.leverage)
 		if err := ts.client.SetLeverage(ctx, ts.leverage); err != nil {
@@ -336,24 +341,28 @@ func (ts *TradingSystem) handleLongEntry(ctx context.Context, data models.Market
 		}
 	}
 
-	// 格式化数量，根据交易对调整精度
-	// 对于大多数交易对，使用合理的小数位数（避免精度过长错误）
-	// 先尝试4位小数，如果还是太长，可以进一步减少
-	quantityStr := fmt.Sprintf("%.4f", quantity)
-	// 移除尾部的0和小数点
-	quantityStr = strings.TrimRight(quantityStr, "0")
-	quantityStr = strings.TrimSuffix(quantityStr, ".")
+	// 格式化数量，根据交易对的 stepSize 调整精度
+	quantityStr := ts.formatQuantityByStepSize(ctx, quantity, futuresSymbol)
 
-	// 调用API开多仓（使用市价单）
+	// 格式化止损止盈价格（根据交易对的 tickSize 调整精度）
+	stopLossStr := ts.formatPriceByTickSize(ctx, stopLoss, futuresSymbol)
+	takeProfitStr := ts.formatPriceByTickSize(ctx, takeProfit, futuresSymbol)
+
+	// 调用API开多仓（使用市价单，同时设置止损止盈）
 	orderReq := backpack.OrderRequest{
-		Symbol:      futuresSymbol,
-		Side:        "Bid", // 买入/做多
-		OrderType:   "Market",
-		Quantity:    quantityStr,
-		TimeInForce: "IOC", // 立即成交或取消
+		Symbol:                 futuresSymbol,
+		Side:                   "Bid", // 买入/做多
+		OrderType:              "Market",
+		Quantity:               quantityStr,
+		TimeInForce:            "IOC",         // 立即成交或取消
+		StopLossTriggerPrice:   stopLossStr,   // 止损触发价格
+		TakeProfitTriggerPrice: takeProfitStr, // 止盈触发价格
+		StopLossTriggerBy:      "MarkPrice",   // 使用标记价格触发
+		TakeProfitTriggerBy:    "MarkPrice",   // 使用标记价格触发
 	}
 
-	log.Printf("正在通过API开多仓 - 交易对: %s, 数量: %s (基于账户余额和杠杆计算)", futuresSymbol, quantityStr)
+	log.Printf("正在通过API开多仓 - 交易对: %s, 数量: %s, 止损: %s, 止盈: %s (基于账户余额和杠杆计算)",
+		futuresSymbol, quantityStr, stopLossStr, takeProfitStr)
 	orderResp, err := ts.client.PlaceOrder(ctx, orderReq)
 	if err != nil {
 		return fmt.Errorf("API开多仓失败: %w", err)
@@ -406,24 +415,28 @@ func (ts *TradingSystem) handleShortEntry(ctx context.Context, data models.Marke
 		}
 	}
 
-	// 格式化数量，根据交易对调整精度
-	// 对于大多数交易对，使用合理的小数位数（避免精度过长错误）
-	// 先尝试4位小数，如果还是太长，可以进一步减少
-	quantityStr := fmt.Sprintf("%.4f", quantity)
-	// 移除尾部的0和小数点
-	quantityStr = strings.TrimRight(quantityStr, "0")
-	quantityStr = strings.TrimSuffix(quantityStr, ".")
+	// 格式化数量，根据交易对的 stepSize 调整精度
+	quantityStr := ts.formatQuantityByStepSize(ctx, quantity, futuresSymbol)
 
-	// 调用API开空仓（使用市价单）
+	// 格式化止损止盈价格（根据交易对的 tickSize 调整精度）
+	stopLossStr := ts.formatPriceByTickSize(ctx, stopLoss, futuresSymbol)
+	takeProfitStr := ts.formatPriceByTickSize(ctx, takeProfit, futuresSymbol)
+
+	// 调用API开空仓（使用市价单，同时设置止损止盈）
 	orderReq := backpack.OrderRequest{
-		Symbol:      futuresSymbol,
-		Side:        "Ask", // 卖出/做空
-		OrderType:   "Market",
-		Quantity:    quantityStr,
-		TimeInForce: "IOC", // 立即成交或取消
+		Symbol:                 futuresSymbol,
+		Side:                   "Ask", // 卖出/做空
+		OrderType:              "Market",
+		Quantity:               quantityStr,
+		TimeInForce:            "IOC",         // 立即成交或取消
+		StopLossTriggerPrice:   stopLossStr,   // 止损触发价格
+		TakeProfitTriggerPrice: takeProfitStr, // 止盈触发价格
+		StopLossTriggerBy:      "MarkPrice",   // 使用标记价格触发
+		TakeProfitTriggerBy:    "MarkPrice",   // 使用标记价格触发
 	}
 
-	log.Printf("正在通过API开空仓 - 交易对: %s, 数量: %s (基于账户余额和杠杆计算)", futuresSymbol, quantityStr)
+	log.Printf("正在通过API开空仓 - 交易对: %s, 数量: %s, 止损: %s, 止盈: %s (基于账户余额和杠杆计算)",
+		futuresSymbol, quantityStr, stopLossStr, takeProfitStr)
 	orderResp, err := ts.client.PlaceOrder(ctx, orderReq)
 	if err != nil {
 		return fmt.Errorf("API开空仓失败: %w", err)
@@ -701,6 +714,108 @@ func (ts *TradingSystem) calculatePositionSize(ctx context.Context, entryPrice, 
 	return quantity, nil
 }
 
+// formatQuantityByStepSize 根据交易对的 stepSize 格式化数量
+func (ts *TradingSystem) formatQuantityByStepSize(ctx context.Context, quantity float64, symbol string) string {
+	// 尝试从市场信息获取 stepSize
+	markets, err := ts.client.GetMarkets(ctx)
+	if err == nil {
+		for _, market := range markets {
+			if market.Symbol == symbol {
+				qf, err := market.GetQuantityFilter()
+				if err == nil && qf.StepSize != "" {
+					// 解析 stepSize
+					stepSize, err := strconv.ParseFloat(qf.StepSize, 64)
+					if err == nil && stepSize > 0 {
+						// 将数量对齐到 stepSize 的倍数（向下取整）
+						alignedQuantity := math.Floor(quantity/stepSize) * stepSize
+						// 确保不小于最小数量
+						if qf.MinQuantity != "" {
+							minQty, err := strconv.ParseFloat(qf.MinQuantity, 64)
+							if err == nil && alignedQuantity < minQty {
+								alignedQuantity = minQty
+							}
+						}
+						// 根据 stepSize 计算小数位数
+						decimals := ts.countDecimals(stepSize)
+						// 格式化
+						quantityStr := fmt.Sprintf("%."+fmt.Sprintf("%d", decimals)+"f", alignedQuantity)
+						// 移除尾部的0和小数点
+						quantityStr = strings.TrimRight(quantityStr, "0")
+						quantityStr = strings.TrimSuffix(quantityStr, ".")
+						return quantityStr
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// 如果无法获取 stepSize，使用保守的2位小数
+	quantityStr := fmt.Sprintf("%.2f", quantity)
+	quantityStr = strings.TrimRight(quantityStr, "0")
+	quantityStr = strings.TrimSuffix(quantityStr, ".")
+	return quantityStr
+}
+
+// countDecimals 计算小数位数
+func (ts *TradingSystem) countDecimals(value float64) int {
+	str := fmt.Sprintf("%g", value)
+	if !strings.Contains(str, ".") {
+		return 0
+	}
+	parts := strings.Split(str, ".")
+	if len(parts) != 2 {
+		return 0
+	}
+	// 移除尾部的0
+	decimals := strings.TrimRight(parts[1], "0")
+	return len(decimals)
+}
+
+// formatPriceByTickSize 根据交易对的 tickSize 格式化价格
+func (ts *TradingSystem) formatPriceByTickSize(ctx context.Context, price float64, symbol string) string {
+	// 尝试从市场信息获取 tickSize
+	markets, err := ts.client.GetMarkets(ctx)
+	if err == nil {
+		for _, market := range markets {
+			if market.Symbol == symbol {
+				// 尝试获取 priceFilter
+				if priceFilterData, ok := market.Filters["priceFilter"]; ok {
+					// 将 priceFilterData 转换为 JSON 再解析
+					filterJSON, err := json.Marshal(priceFilterData)
+					if err == nil {
+						var priceFilter struct {
+							TickSize string `json:"tickSize"`
+						}
+						if err := json.Unmarshal(filterJSON, &priceFilter); err == nil && priceFilter.TickSize != "" {
+							tickSize, err := strconv.ParseFloat(priceFilter.TickSize, 64)
+							if err == nil && tickSize > 0 {
+								// 将价格对齐到 tickSize 的倍数（向下取整）
+								alignedPrice := math.Floor(price/tickSize) * tickSize
+								// 计算小数位数
+								decimals := ts.countDecimals(tickSize)
+								// 格式化
+								priceStr := fmt.Sprintf("%."+fmt.Sprintf("%d", decimals)+"f", alignedPrice)
+								// 移除尾部的0和小数点
+								priceStr = strings.TrimRight(priceStr, "0")
+								priceStr = strings.TrimSuffix(priceStr, ".")
+								return priceStr
+							}
+						}
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// 如果无法获取 tickSize，使用4位小数（大多数交易对的合理精度）
+	priceStr := fmt.Sprintf("%.4f", price)
+	priceStr = strings.TrimRight(priceStr, "0")
+	priceStr = strings.TrimSuffix(priceStr, ".")
+	return priceStr
+}
+
 // getAccountBalance gets account balance for the quote asset using backpack client
 func (ts *TradingSystem) getAccountBalance(ctx context.Context) (float64, string) {
 	// 通过backpack客户端获取账户余额
@@ -732,8 +847,6 @@ func (ts *TradingSystem) getAccountBalance(ctx context.Context) (float64, string
 		}
 	}
 
-	log.Printf("正在查找计价资产: %s (从交易对 %s 提取)", quoteAsset, ts.symbol)
-
 	// 查找计价资产余额（支持USD/USDC互匹配，优先查找USD）
 	// 首先尝试精确匹配
 	var matchedBalance *backpack.Balance
@@ -744,7 +857,6 @@ func (ts *TradingSystem) getAccountBalance(ctx context.Context) (float64, string
 		if strings.EqualFold(balances[i].Asset, quoteAsset) {
 			matchedBalance = &balances[i]
 			matchedAsset = balances[i].Asset
-			log.Printf("✅ 精确匹配到 %s", matchedAsset)
 			break
 		}
 	}
@@ -757,7 +869,6 @@ func (ts *TradingSystem) getAccountBalance(ctx context.Context) (float64, string
 				if available > 0 {
 					matchedBalance = &balances[i]
 					matchedAsset = "USD"
-					log.Printf("✅ USDC未找到，使用USD余额")
 					break
 				}
 			}
@@ -772,7 +883,6 @@ func (ts *TradingSystem) getAccountBalance(ctx context.Context) (float64, string
 				if available > 0 {
 					matchedBalance = &balances[i]
 					matchedAsset = "USDC"
-					log.Printf("✅ USD未找到，使用USDC余额")
 					break
 				}
 			}
@@ -792,7 +902,6 @@ func (ts *TradingSystem) getAccountBalance(ctx context.Context) (float64, string
 					if total > 0 {
 						matchedBalance = &balances[i]
 						matchedAsset = balances[i].Asset
-						log.Printf("✅ 找到 %s 余额（总计: %.4f）", matchedAsset, total)
 						break
 					}
 				}
@@ -814,8 +923,6 @@ func (ts *TradingSystem) getAccountBalance(ctx context.Context) (float64, string
 		log.Printf("警告: 无法解析 %s 余额: %s", matchedAsset, matchedBalance.Available)
 		return 0, matchedAsset
 	}
-
-	log.Printf("✅ 找到 %s 余额: %.4f (可用)", matchedAsset, available)
 	return available, matchedAsset
 }
 
@@ -981,7 +1088,7 @@ func (ts *TradingSystem) printStatus(ctx context.Context, data models.MarketData
 	// 计算可用资金（账户余额 * 杠杆）
 	availableCapital := accountBalance * float64(ts.leverage)
 
-	// 输出状态信息
+	// 输出日志
 	log.Println("=" + strings.Repeat("=", 80))
 	log.Printf("时间: %s | 交易对: %s | 周期: %s | 杠杆: %dx",
 		kline.EndTime.Format("2006-01-02 15:04:05"), ts.symbol, ts.interval, ts.leverage)
@@ -997,6 +1104,13 @@ func (ts *TradingSystem) printStatus(ctx context.Context, data models.MarketData
 	log.Println("--- 技术指标 ---")
 	log.Printf("EMA30: %.4f (趋势过滤)", ind.EMA30)
 	log.Printf("交易信号: %s", signalName)
+	// 如果没有信号，显示过滤失败原因
+	if signal == models.SignalNone && pattern.Direction != models.SignalNone {
+		failureReason := ts.strategy.GetLastFilterFailure()
+		if failureReason != "" {
+			log.Printf("⚠️  未开仓原因: %s", failureReason)
+		}
+	}
 	log.Printf("持仓状态: %s", positionInfo)
 
 	// 输出总盈亏

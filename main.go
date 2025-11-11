@@ -45,26 +45,61 @@ func main() {
 	// Load trading system configuration from environment variables
 	config := loadConfigFromEnv()
 
-	// Create trading system
-	tradingSystem := trading.NewTradingSystem(client, config)
+	// 检查是否启用多交易对模式
+	multiSymbolMode := os.Getenv("MULTI_SYMBOL_MODE")
+	if multiSymbolMode == "true" || multiSymbolMode == "1" {
+		// 多交易对模式：监控所有 PERP 交易对
+		log.Println("=== 启用多交易对监控模式 ===")
 
-	// Run trading system
-	log.Printf("启动交易系统 - 配置: %+v", config)
+		// 创建监控系统
+		monitor := trading.NewMultiSymbolMonitor(client, config)
 
-	if err := tradingSystem.Run(ctx); err != nil {
-		log.Printf("交易系统运行错误: %v", err)
+		// 运行交易系统（阻塞直到退出）
+		if err := monitor.Run(ctx); err != nil {
+			log.Printf("多交易对监控系统运行错误: %v", err)
+		}
+
+		// 打印所有交易对的统计信息
+		fmt.Println("\n=== 多交易对监控系统性能统计 ===")
+		symbols := monitor.GetAllSymbols()
+		for _, symbol := range symbols {
+			if ts, ok := monitor.GetTradingSystem(symbol); ok {
+				performance := ts.GetPerformance()
+				if performance.TotalOrders > 0 {
+					fmt.Printf("\n--- %s ---\n", symbol)
+					fmt.Printf("总订单数: %d\n", performance.TotalOrders)
+					fmt.Printf("已平仓订单: %d\n", performance.ClosedOrders)
+					fmt.Printf("未平仓订单: %d\n", performance.OpenOrders)
+					fmt.Printf("总盈亏: %.4f USDC\n", performance.TotalPnL)
+					fmt.Printf("胜率: %.2f%%\n", performance.WinRate)
+					fmt.Printf("平均盈利: %.4f USDC\n", performance.AverageWin)
+					fmt.Printf("平均亏损: %.4f USDC\n", performance.AverageLoss)
+				}
+			}
+		}
+	} else {
+		// 单交易对模式：原有的单交易对监控
+		log.Println("=== 启用单交易对模式 ===")
+		tradingSystem := trading.NewTradingSystem(client, config)
+
+		// Run trading system
+		log.Printf("启动交易系统 - 配置: %+v", config)
+
+		if err := tradingSystem.Run(ctx); err != nil {
+			log.Printf("交易系统运行错误: %v", err)
+		}
+
+		// Print final performance statistics
+		performance := tradingSystem.GetPerformance()
+		fmt.Println("\n=== 交易系统性能统计 ===")
+		fmt.Printf("总订单数: %d\n", performance.TotalOrders)
+		fmt.Printf("已平仓订单: %d\n", performance.ClosedOrders)
+		fmt.Printf("未平仓订单: %d\n", performance.OpenOrders)
+		fmt.Printf("总盈亏: %.4f USDC\n", performance.TotalPnL)
+		fmt.Printf("胜率: %.2f%%\n", performance.WinRate)
+		fmt.Printf("平均盈利: %.4f USDC\n", performance.AverageWin)
+		fmt.Printf("平均亏损: %.4f USDC\n", performance.AverageLoss)
 	}
-
-	// Print final performance statistics
-	performance := tradingSystem.GetPerformance()
-	fmt.Println("\n=== 交易系统性能统计 ===")
-	fmt.Printf("总订单数: %d\n", performance.TotalOrders)
-	fmt.Printf("已平仓订单: %d\n", performance.ClosedOrders)
-	fmt.Printf("未平仓订单: %d\n", performance.OpenOrders)
-	fmt.Printf("总盈亏: %.4f USDC\n", performance.TotalPnL)
-	fmt.Printf("胜率: %.2f%%\n", performance.WinRate)
-	fmt.Printf("平均盈利: %.4f USDC\n", performance.AverageWin)
-	fmt.Printf("平均亏损: %.4f USDC\n", performance.AverageLoss)
 
 	log.Println("交易系统已停止")
 }
@@ -138,6 +173,18 @@ func loadConfigFromEnv() trading.Config {
 		} else {
 			log.Printf("警告: 无法解析 TRADING_MAX_POS_PCT=%s, 使用默认值 %.2f", maxPosPctStr, config.MaxPosPct)
 		}
+	}
+
+	// 读取最大监控交易对数量
+	if maxSymbolsStr := os.Getenv("MAX_TRADING_SYMBOL"); maxSymbolsStr != "" {
+		if maxSymbols, err := strconv.Atoi(maxSymbolsStr); err == nil && maxSymbols > 0 {
+			config.MaxTradingSymbols = maxSymbols
+		} else {
+			log.Printf("警告: 无法解析 MAX_TRADING_SYMBOL=%s, 使用默认值 %d", maxSymbolsStr, config.MaxTradingSymbols)
+		}
+	} else {
+		// 默认值为20
+		config.MaxTradingSymbols = 20
 	}
 
 	return config

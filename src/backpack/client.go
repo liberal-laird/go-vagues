@@ -643,3 +643,78 @@ func (c *Client) SetLeverage(ctx context.Context, leverage int) error {
 	}
 	return c.UpdateAccount(ctx, req)
 }
+
+// QuantityFilter 数量过滤器
+type QuantityFilter struct {
+	MinQuantity string `json:"minQuantity"`
+	MaxQuantity string `json:"maxQuantity,omitempty"`
+	StepSize    string `json:"stepSize"`
+}
+
+// Market 市场信息
+type Market struct {
+	BaseSymbol     string                 `json:"baseSymbol"`
+	QuoteSymbol    string                 `json:"quoteSymbol"`
+	Symbol         string                 `json:"symbol"`
+	MarketType     string                 `json:"marketType"` // SPOT, PERP
+	Visible        bool                   `json:"visible"`
+	OrderBookState string                 `json:"orderBookState"`
+	Filters        map[string]interface{} `json:"filters"`
+}
+
+// GetQuantityFilter 获取数量过滤器
+func (m *Market) GetQuantityFilter() (*QuantityFilter, error) {
+	filterData, ok := m.Filters["quantityFilter"]
+	if !ok {
+		return nil, fmt.Errorf("未找到 quantityFilter")
+	}
+
+	// 将 filterData 转换为 JSON 再解析
+	filterJSON, err := json.Marshal(filterData)
+	if err != nil {
+		return nil, fmt.Errorf("序列化 quantityFilter 失败: %w", err)
+	}
+
+	var qf QuantityFilter
+	if err := json.Unmarshal(filterJSON, &qf); err != nil {
+		return nil, fmt.Errorf("解析 quantityFilter 失败: %w", err)
+	}
+
+	return &qf, nil
+}
+
+// GetMarkets 获取所有市场信息
+// API 文档：https://api.backpack.exchange/api/v1/markets
+func (c *Client) GetMarkets(ctx context.Context) ([]Market, error) {
+	path := "/api/v1/markets"
+
+	// 这是一个公开接口，不需要签名
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API 请求失败: 状态码 %d, 响应: %s", resp.StatusCode, string(respBody))
+	}
+
+	var markets []Market
+	if err := json.Unmarshal(respBody, &markets); err != nil {
+		return nil, fmt.Errorf("解析市场信息失败: %w (原始响应: %s)", err, string(respBody))
+	}
+
+	return markets, nil
+}

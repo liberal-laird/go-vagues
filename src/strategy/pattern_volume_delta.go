@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"fmt"
 	"log"
 	"math"
 	"vagues-go/src/models"
@@ -30,6 +31,12 @@ type PatternVolumeDeltaStrategy struct {
 	// History
 	history      []models.MarketData
 	deltaHistory []float64 // History of delta values for dynamic threshold
+
+	// Logging control
+	verboseLogging bool // Whether to output verbose filter logs (default false)
+
+	// Filter failure reason (for debugging)
+	lastFilterFailure string // Last filter that failed
 }
 
 // NewPatternVolumeDeltaStrategy creates a new strategy instance
@@ -48,7 +55,18 @@ func NewPatternVolumeDeltaStrategy() *PatternVolumeDeltaStrategy {
 		emaLong:            30,
 		history:            make([]models.MarketData, 0),
 		deltaHistory:       make([]float64, 0),
+		verboseLogging:     false, // 默认关闭详细日志
 	}
+}
+
+// SetVerboseLogging 设置是否输出详细日志
+func (s *PatternVolumeDeltaStrategy) SetVerboseLogging(enabled bool) {
+	s.verboseLogging = enabled
+}
+
+// GetLastFilterFailure 获取最后一次过滤失败的原因
+func (s *PatternVolumeDeltaStrategy) GetLastFilterFailure() string {
+	return s.lastFilterFailure
 }
 
 // Analyze analyzes the market data and returns trading signals
@@ -76,39 +94,62 @@ func (s *PatternVolumeDeltaStrategy) Analyze(data models.MarketData, delta model
 	// 1. Pattern detection
 	pattern := s.detectPatterns(current, previous)
 	if pattern.Direction == models.SignalNone {
-		log.Printf("策略过滤: Pattern检测未通过")
+		s.lastFilterFailure = "Pattern检测未通过"
+		if s.verboseLogging {
+			log.Printf("策略过滤: Pattern检测未通过")
+		}
 		return models.SignalNone
 	}
-	log.Printf("策略过滤: Pattern检测通过 - %s (方向: %s, 置信度: %.2f)", pattern.Name, getPatternDirectionName(pattern.Direction), pattern.Confidence)
+	if s.verboseLogging {
+		log.Printf("策略过滤: Pattern检测通过 - %s (方向: %s, 置信度: %.2f)", pattern.Name, getPatternDirectionName(pattern.Direction), pattern.Confidence)
+	}
 
 	// 2. Volume filter
 	volOk := s.checkVolume(current)
 	if !volOk {
-		log.Printf("策略过滤: Volume过滤未通过 (当前成交量: %.2f)", current.KLine.Volume)
+		s.lastFilterFailure = fmt.Sprintf("Volume过滤未通过 (当前成交量: %.2f)", current.KLine.Volume)
+		if s.verboseLogging {
+			log.Printf("策略过滤: Volume过滤未通过 (当前成交量: %.2f)", current.KLine.Volume)
+		}
 		return models.SignalNone
 	}
-	log.Printf("策略过滤: Volume过滤通过 (当前成交量: %.2f)", current.KLine.Volume)
+	if s.verboseLogging {
+		log.Printf("策略过滤: Volume过滤通过 (当前成交量: %.2f)", current.KLine.Volume)
+	}
 
 	// 3. Delta filter
 	deltaOk := s.checkDelta(delta, pattern.Direction)
 	if !deltaOk {
-		log.Printf("策略过滤: Delta过滤未通过 (Delta值: %.2f, 方向: %s)", delta.Value, getPatternDirectionName(pattern.Direction))
+		s.lastFilterFailure = fmt.Sprintf("Delta过滤未通过 (Delta值: %.2f, 方向: %s)", delta.Value, getPatternDirectionName(pattern.Direction))
+		if s.verboseLogging {
+			log.Printf("策略过滤: Delta过滤未通过 (Delta值: %.2f, 方向: %s)", delta.Value, getPatternDirectionName(pattern.Direction))
+		}
 		return models.SignalNone
 	}
-	log.Printf("策略过滤: Delta过滤通过 (Delta值: %.2f)", delta.Value)
+	if s.verboseLogging {
+		log.Printf("策略过滤: Delta过滤通过 (Delta值: %.2f)", delta.Value)
+	}
 
 	// 4. Trend filter (optional)
 	if s.useTrendFilter {
 		trendOk := s.checkTrend(current, pattern.Direction)
 		if !trendOk {
-			log.Printf("策略过滤: Trend过滤未通过 (价格: %.4f, EMA30: %.4f, 方向: %s)", current.KLine.Close, current.Indicators.EMA30, getPatternDirectionName(pattern.Direction))
+			s.lastFilterFailure = fmt.Sprintf("Trend过滤未通过 (价格: %.4f, EMA30: %.4f, 方向: %s)", current.KLine.Close, current.Indicators.EMA30, getPatternDirectionName(pattern.Direction))
+			if s.verboseLogging {
+				log.Printf("策略过滤: Trend过滤未通过 (价格: %.4f, EMA30: %.4f, 方向: %s)", current.KLine.Close, current.Indicators.EMA30, getPatternDirectionName(pattern.Direction))
+			}
 			return models.SignalNone
 		}
-		log.Printf("策略过滤: Trend过滤通过 (价格: %.4f, EMA30: %.4f)", current.KLine.Close, current.Indicators.EMA30)
+		if s.verboseLogging {
+			log.Printf("策略过滤: Trend过滤通过 (价格: %.4f, EMA30: %.4f)", current.KLine.Close, current.Indicators.EMA30)
+		}
 	}
 
 	// All filters passed, return entry signal
-	log.Printf("策略过滤: ✅ 所有过滤条件通过，生成 %s 信号", getPatternDirectionName(pattern.Direction))
+	s.lastFilterFailure = "" // 清除失败原因
+	if s.verboseLogging {
+		log.Printf("策略过滤: ✅ 所有过滤条件通过，生成 %s 信号", getPatternDirectionName(pattern.Direction))
+	}
 	return pattern.Direction
 }
 
@@ -288,7 +329,9 @@ func (s *PatternVolumeDeltaStrategy) checkVolume(candle models.MarketData) bool 
 	// 如果历史数据不足，使用可用数据计算平均值
 	availableData := len(s.history) - 1 // 排除当前K线
 	if availableData < 1 {
-		log.Printf("策略过滤: Volume过滤 - 历史数据不足 (需要至少1根, 当前: %d)", availableData)
+		if s.verboseLogging {
+			log.Printf("策略过滤: Volume过滤 - 历史数据不足 (需要至少1根, 当前: %d)", availableData)
+		}
 		return false
 	}
 
@@ -296,7 +339,9 @@ func (s *PatternVolumeDeltaStrategy) checkVolume(candle models.MarketData) bool 
 	lookback := s.vLookback
 	if availableData < lookback {
 		lookback = availableData
-		log.Printf("策略过滤: Volume过滤 - 使用可用数据计算 (需要: %d, 可用: %d)", s.vLookback, availableData)
+		if s.verboseLogging {
+			log.Printf("策略过滤: Volume过滤 - 使用可用数据计算 (需要: %d, 可用: %d)", s.vLookback, availableData)
+		}
 	}
 
 	// Calculate average volume over lookback period
@@ -314,8 +359,10 @@ func (s *PatternVolumeDeltaStrategy) checkVolume(candle models.MarketData) bool 
 	// Check if current volume >= avg * multiplier
 	result := candle.KLine.Volume >= threshold
 	if !result {
-		log.Printf("策略过滤: Volume过滤 - 当前成交量 %.2f < 阈值 %.2f (平均成交量: %.2f × 倍数: %.2f)",
-			candle.KLine.Volume, threshold, avgVolume, s.vMult)
+		if s.verboseLogging {
+			log.Printf("策略过滤: Volume过滤 - 当前成交量 %.2f < 阈值 %.2f (平均成交量: %.2f × 倍数: %.2f)",
+				candle.KLine.Volume, threshold, avgVolume, s.vMult)
+		}
 	}
 	return result
 }
@@ -327,7 +374,9 @@ func (s *PatternVolumeDeltaStrategy) checkDelta(delta models.Delta, patternDirec
 	if s.deltaThreshMode == "dynamic" {
 		// Calculate dynamic threshold based on recent delta history
 		if len(s.deltaHistory) < 10 {
-			log.Printf("策略过滤: Delta过滤 - 历史数据不足 (需要: 10, 当前: %d)", len(s.deltaHistory))
+			if s.verboseLogging {
+				log.Printf("策略过滤: Delta过滤 - 历史数据不足 (需要: 10, 当前: %d)", len(s.deltaHistory))
+			}
 			return false
 		}
 
@@ -337,10 +386,14 @@ func (s *PatternVolumeDeltaStrategy) checkDelta(delta models.Delta, patternDirec
 		}
 		meanAbs := sumAbs / float64(len(s.deltaHistory))
 		threshold = meanAbs * s.deltaDynMult
-		log.Printf("策略过滤: Delta过滤 - 动态阈值: %.2f (平均绝对值: %.2f × 倍数: %.2f)", threshold, meanAbs, s.deltaDynMult)
+		if s.verboseLogging {
+			log.Printf("策略过滤: Delta过滤 - 动态阈值: %.2f (平均绝对值: %.2f × 倍数: %.2f)", threshold, meanAbs, s.deltaDynMult)
+		}
 	} else {
 		threshold = s.deltaThreshAbs
-		log.Printf("策略过滤: Delta过滤 - 绝对阈值: %.2f", threshold)
+		if s.verboseLogging {
+			log.Printf("策略过滤: Delta过滤 - 绝对阈值: %.2f", threshold)
+		}
 	}
 
 	// Check delta direction matches pattern direction
@@ -348,12 +401,16 @@ func (s *PatternVolumeDeltaStrategy) checkDelta(delta models.Delta, patternDirec
 	if patternDirection == models.SignalLongEntry {
 		result = delta.Value >= threshold
 		if !result {
-			log.Printf("策略过滤: Delta过滤 - LONG方向: Delta值 %.2f < 阈值 %.2f", delta.Value, threshold)
+			if s.verboseLogging {
+				log.Printf("策略过滤: Delta过滤 - LONG方向: Delta值 %.2f < 阈值 %.2f", delta.Value, threshold)
+			}
 		}
 	} else if patternDirection == models.SignalShortEntry {
 		result = delta.Value <= -threshold
 		if !result {
-			log.Printf("策略过滤: Delta过滤 - SHORT方向: Delta值 %.2f > -阈值 %.2f (需要 <= %.2f)", delta.Value, threshold, -threshold)
+			if s.verboseLogging {
+				log.Printf("策略过滤: Delta过滤 - SHORT方向: Delta值 %.2f > -阈值 %.2f (需要 <= %.2f)", delta.Value, threshold, -threshold)
+			}
 		}
 	} else {
 		return false

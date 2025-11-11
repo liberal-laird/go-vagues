@@ -135,23 +135,8 @@ func (ts *TradingSystem) Run(ctx context.Context) error {
 	ticker := time.NewTicker(ts.getIntervalDuration())
 	defer ticker.Stop()
 
-	// 持仓监控循环：每10秒检查一次持仓盈利状态和止盈止损
-	positionMonitorTicker := time.NewTicker(10 * time.Second)
-	defer positionMonitorTicker.Stop()
-
-	// 启动持仓监控goroutine
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-positionMonitorTicker.C:
-				if err := ts.checkPositionStatus(ctx); err != nil {
-					log.Printf("检查持仓状态失败: %v", err)
-				}
-			}
-		}
-	}()
+	// 注意：已禁用自动平仓功能，只保留开仓功能
+	// 止损止盈已通过API在开仓时设置，由交易所自动执行
 
 	for {
 		select {
@@ -214,102 +199,29 @@ func (ts *TradingSystem) processNewData(ctx context.Context) error {
 	// 输出当前状态和指标
 	ts.printStatus(ctx, currentData, signal, pattern, delta, accountBalance, quoteAsset)
 
-	// 处理交易信号
+	// 处理交易信号（只处理开仓信号，不处理平仓信号）
 	switch signal {
 	case models.SignalLongEntry:
 		return ts.handleLongEntry(ctx, currentData)
 	case models.SignalShortEntry:
 		return ts.handleShortEntry(ctx, currentData)
+	// 注意：已禁用自动平仓，止损止盈由交易所通过API自动执行
 	case models.SignalLongExit:
-		return ts.handleLongExit(ctx, currentData)
+		// 忽略平多信号
+		return nil
 	case models.SignalShortExit:
-		return ts.handleShortExit(ctx, currentData)
+		// 忽略平空信号
+		return nil
 	}
-
-	// 检查止损止盈
-	ts.orderManager.CheckStopLossTakeProfit(currentData.KLine.Close)
 
 	return nil
 }
 
 // checkPositionStatus checks position profit/loss status and stop loss/take profit conditions
-// This function is called every 10 seconds to monitor positions
+// 注意：此函数已禁用，不再自动平仓
+// 止损止盈已通过API在开仓时设置，由交易所自动执行
 func (ts *TradingSystem) checkPositionStatus(ctx context.Context) error {
-	// 获取本地开仓订单
-	openOrders := ts.orderManager.GetOpenOrders()
-	if len(openOrders) == 0 {
-		// 没有持仓，无需检查
-		return nil
-	}
-
-	// 获取当前持仓信息（通过API）
-	futuresSymbol := ts.getFuturesSymbol()
-	positions, err := ts.client.GetPositions(ctx, futuresSymbol)
-	if err != nil {
-		return fmt.Errorf("获取持仓信息失败: %w", err)
-	}
-
-	// 如果没有持仓，但本地有订单，可能需要同步
-	if len(positions) == 0 {
-		log.Printf("⚠️  API显示无持仓，但本地有开仓订单，可能需要同步")
-		return nil
-	}
-
-	// 获取当前标记价格（用于计算盈亏）
-	var currentPrice float64
-	for _, pos := range positions {
-		if pos.Symbol == futuresSymbol {
-			markPrice, err := strconv.ParseFloat(pos.MarkPrice, 64)
-			if err != nil {
-				log.Printf("警告: 无法解析标记价格: %s", pos.MarkPrice)
-				continue
-			}
-			currentPrice = markPrice
-
-			// 解析未实现盈亏
-			unrealizedPnl, _ := strconv.ParseFloat(pos.UnrealizedPnl, 64)
-			log.Printf("📊 持仓监控 - 交易对: %s | 标记价格: %.4f | 未实现盈亏: %.4f",
-				pos.Symbol, markPrice, unrealizedPnl)
-			break
-		}
-	}
-
-	if currentPrice == 0 {
-		// 如果没有找到标记价格，尝试获取最新K线价格
-		klines, err := ts.fetchLatestKlines(ctx, 1)
-		if err != nil || len(klines) == 0 {
-			return fmt.Errorf("无法获取当前价格")
-		}
-		currentPrice = klines[0].Close
-		log.Printf("📊 持仓监控 - 使用K线收盘价: %.4f", currentPrice)
-	}
-
-	// 检查每个开仓订单的止盈止损条件
-	closedOrderIDs := ts.orderManager.CheckStopLossTakeProfit(currentPrice)
-
-	// 如果有订单被关闭，执行平仓操作
-	for _, orderID := range closedOrderIDs {
-		order := ts.orderManager.GetOrder(orderID)
-		if order == nil {
-			continue
-		}
-
-		log.Printf("🔄 检测到止盈/止损触发 - 订单ID: %s, 类型: %s, 入场价: %.4f, 当前价: %.4f, 盈亏: %.4f",
-			orderID, order.OrderType, order.EntryPrice, currentPrice, order.PnL)
-
-		// 执行平仓
-		futuresSymbol := ts.getFuturesSymbol()
-		log.Printf("正在通过API平仓 - 交易对: %s", futuresSymbol)
-		orderResp, err := ts.client.ClosePosition(ctx, futuresSymbol)
-		if err != nil {
-			log.Printf("⚠️  API平仓失败: %v (订单已在本地标记为关闭)", err)
-			// 订单已在本地关闭，即使API失败也继续
-		} else {
-			log.Printf("✅ API平仓成功 - API订单ID: %s, 本地订单ID: %s, 价格: %.4f, 盈亏: %.4f",
-				orderResp.ID, orderID, currentPrice, order.PnL)
-		}
-	}
-
+	// 已禁用自动平仓功能
 	return nil
 }
 
@@ -488,86 +400,18 @@ func (ts *TradingSystem) handleShortEntry(ctx context.Context, data models.Marke
 }
 
 // handleLongExit handles long exit signal
+// 注意：此函数已禁用，不再自动平仓
+// 止损止盈已通过API在开仓时设置，由交易所自动执行
 func (ts *TradingSystem) handleLongExit(ctx context.Context, data models.MarketData) error {
-	openOrders := ts.orderManager.GetOpenOrders()
-	for _, order := range openOrders {
-		if order.OrderType == OrderTypeLong {
-			// 转换symbol为期货格式
-			futuresSymbol := ts.getFuturesSymbol()
-
-			// 调用API平仓
-			log.Printf("正在通过API平多仓 - 交易对: %s, 数量: %.4f", futuresSymbol, order.Quantity)
-			orderResp, err := ts.client.ClosePosition(ctx, futuresSymbol)
-			if err != nil {
-				log.Printf("API平多仓失败: %v", err)
-				// 即使API失败，也更新本地订单状态
-				ts.orderManager.CloseOrder(order.ID, data.KLine.Close)
-				continue
-			}
-
-			// 更新本地订单状态
-			if err := ts.orderManager.CloseOrder(order.ID, data.KLine.Close); err != nil {
-				log.Printf("更新本地订单状态失败: %v", err)
-			} else {
-				log.Printf("✅ 平多仓成功 - API订单ID: %s, 本地订单ID: %s, 价格: %.4f, 盈亏: %.4f",
-					orderResp.ID, order.ID, data.KLine.Close, order.PnL)
-
-				// 发送 Telegram 通知
-				if ts.notifier != nil {
-					_ = ts.notifier.SendCloseNotification(
-						futuresSymbol,
-						fmt.Sprintf("%.4f", order.Quantity),
-						fmt.Sprintf("%.4f", data.KLine.Close),
-						fmt.Sprintf("%.4f", order.PnL),
-						fmt.Sprintf("%.2f%%", order.PnLPercent),
-						orderResp.ID,
-					)
-				}
-			}
-		}
-	}
+	// 已禁用自动平仓功能
 	return nil
 }
 
 // handleShortExit handles short exit signal
+// 注意：此函数已禁用，不再自动平仓
+// 止损止盈已通过API在开仓时设置，由交易所自动执行
 func (ts *TradingSystem) handleShortExit(ctx context.Context, data models.MarketData) error {
-	openOrders := ts.orderManager.GetOpenOrders()
-	for _, order := range openOrders {
-		if order.OrderType == OrderTypeShort {
-			// 转换symbol为期货格式
-			futuresSymbol := ts.getFuturesSymbol()
-
-			// 调用API平仓
-			log.Printf("正在通过API平空仓 - 交易对: %s, 数量: %.4f", futuresSymbol, order.Quantity)
-			orderResp, err := ts.client.ClosePosition(ctx, futuresSymbol)
-			if err != nil {
-				log.Printf("API平空仓失败: %v", err)
-				// 即使API失败，也更新本地订单状态
-				ts.orderManager.CloseOrder(order.ID, data.KLine.Close)
-				continue
-			}
-
-			// 更新本地订单状态
-			if err := ts.orderManager.CloseOrder(order.ID, data.KLine.Close); err != nil {
-				log.Printf("更新本地订单状态失败: %v", err)
-			} else {
-				log.Printf("✅ 平空仓成功 - API订单ID: %s, 本地订单ID: %s, 价格: %.4f, 盈亏: %.4f",
-					orderResp.ID, order.ID, data.KLine.Close, order.PnL)
-
-				// 发送 Telegram 通知
-				if ts.notifier != nil {
-					_ = ts.notifier.SendCloseNotification(
-						futuresSymbol,
-						fmt.Sprintf("%.4f", order.Quantity),
-						fmt.Sprintf("%.4f", data.KLine.Close),
-						fmt.Sprintf("%.4f", order.PnL),
-						fmt.Sprintf("%.2f%%", order.PnLPercent),
-						orderResp.ID,
-					)
-				}
-			}
-		}
-	}
+	// 已禁用自动平仓功能
 	return nil
 }
 

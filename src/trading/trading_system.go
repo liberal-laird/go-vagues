@@ -288,6 +288,25 @@ func (ts *TradingSystem) handleLongEntry(ctx context.Context, data models.Market
 		return fmt.Errorf("API开多仓失败: %w", err)
 	}
 
+	// 获取账户信息以计算手续费
+	accountInfo, err := ts.client.GetAccount(ctx)
+	var takerFeeRate float64 = 0.0006 // 默认 0.06% (如果获取失败)
+	if err == nil && accountInfo != nil {
+		if feeStr := accountInfo.FuturesTakerFee; feeStr != "" {
+			if fee, err := strconv.ParseFloat(feeStr, 64); err == nil {
+				takerFeeRate = fee
+			}
+		}
+	}
+
+	// 计算预估手续费（开仓+平仓）
+	// 开仓手续费 = 开仓金额 * taker fee rate
+	entryValue := data.KLine.Close * quantity
+	entryFee := entryValue * takerFeeRate
+	// 平仓手续费预估（使用入场价估算，实际平仓时会更准确）
+	exitFee := entryValue * takerFeeRate
+	estimatedTradingFee := entryFee + exitFee
+
 	// 保存订单到本地管理器
 	orderID := ts.orderManager.OpenLong(ts.symbol, data.KLine.Close, quantity, stopLoss, takeProfit)
 	// 更新本地订单ID为API返回的订单ID
@@ -295,6 +314,8 @@ func (ts *TradingSystem) handleLongEntry(ctx context.Context, data models.Market
 
 	log.Printf("✅ 开多仓成功 - API订单ID: %s, 本地订单ID: %s, 价格: %.4f, 数量: %.4f, 止损: %.4f, 止盈: %.4f",
 		orderResp.ID, orderID, data.KLine.Close, quantity, stopLoss, takeProfit)
+	log.Printf("📊 手续费信息 - Taker费率: %.4f%%, 预估总手续费: %.6f (开仓: %.6f + 平仓预估: %.6f)",
+		takerFeeRate*100, estimatedTradingFee, entryFee, exitFee)
 
 	// 发送 Telegram 通知
 	if ts.notifier != nil {
@@ -375,6 +396,25 @@ func (ts *TradingSystem) handleShortEntry(ctx context.Context, data models.Marke
 		return fmt.Errorf("API开空仓失败: %w", err)
 	}
 
+	// 获取账户信息以计算手续费
+	accountInfo, err := ts.client.GetAccount(ctx)
+	var takerFeeRate float64 = 0.0006 // 默认 0.06% (如果获取失败)
+	if err == nil && accountInfo != nil {
+		if feeStr := accountInfo.FuturesTakerFee; feeStr != "" {
+			if fee, err := strconv.ParseFloat(feeStr, 64); err == nil {
+				takerFeeRate = fee
+			}
+		}
+	}
+
+	// 计算预估手续费（开仓+平仓）
+	// 开仓手续费 = 开仓金额 * taker fee rate
+	entryValue := data.KLine.Close * quantity
+	entryFee := entryValue * takerFeeRate
+	// 平仓手续费预估（使用入场价估算，实际平仓时会更准确）
+	exitFee := entryValue * takerFeeRate
+	estimatedTradingFee := entryFee + exitFee
+
 	// 保存订单到本地管理器
 	orderID := ts.orderManager.OpenShort(ts.symbol, data.KLine.Close, quantity, stopLoss, takeProfit)
 	// 更新本地订单ID为API返回的订单ID
@@ -382,6 +422,8 @@ func (ts *TradingSystem) handleShortEntry(ctx context.Context, data models.Marke
 
 	log.Printf("✅ 开空仓成功 - API订单ID: %s, 本地订单ID: %s, 价格: %.4f, 数量: %.4f, 止损: %.4f, 止盈: %.4f",
 		orderResp.ID, orderID, data.KLine.Close, quantity, stopLoss, takeProfit)
+	log.Printf("📊 手续费信息 - Taker费率: %.4f%%, 预估总手续费: %.6f (开仓: %.6f + 平仓预估: %.6f)",
+		takerFeeRate*100, estimatedTradingFee, entryFee, exitFee)
 
 	// 发送 Telegram 通知
 	if ts.notifier != nil {

@@ -45,6 +45,8 @@ type LocalOrder struct {
 	LowestPrice      float64     // 持仓期间最低价（用于追踪止损）
 	PnL              float64     // 盈亏金额
 	PnLPercent       float64     // 盈亏百分比
+	TradingFee       float64     // 交易手续费（开仓+平仓）
+	FundingFee       float64     // 资金费率
 }
 
 // OrderManager manages local order tracking
@@ -120,7 +122,9 @@ func (om *OrderManager) OpenShort(symbol string, entryPrice, quantity float64, s
 }
 
 // CloseOrder closes an open order
-func (om *OrderManager) CloseOrder(orderID string, exitPrice float64) error {
+// tradingFee: 交易手续费（开仓+平仓）
+// fundingFee: 资金费率
+func (om *OrderManager) CloseOrder(orderID string, exitPrice float64, tradingFee, fundingFee float64) error {
 	order, exists := om.orders[orderID]
 	if !exists {
 		return fmt.Errorf("订单不存在: %s", orderID)
@@ -133,8 +137,10 @@ func (om *OrderManager) CloseOrder(orderID string, exitPrice float64) error {
 	order.ExitPrice = exitPrice
 	order.ExitTime = time.Now()
 	order.Status = OrderStatusClosed
+	order.TradingFee = tradingFee
+	order.FundingFee = fundingFee
 
-	// 计算盈亏
+	// 计算盈亏（减去手续费和资金费率）
 	order.PnL = om.calculatePnL(order)
 	order.PnLPercent = om.calculatePnLPercent(order)
 
@@ -245,7 +251,9 @@ func (om *OrderManager) CheckStopLossTakeProfit(currentPrice float64) []string {
 		}
 
 		if shouldClose {
-			om.CloseOrder(orderID, currentPrice)
+			// 注意：已禁用自动平仓，此函数不会被调用
+			// 如果被调用，手续费和资金费率设为0（实际应该从API获取）
+			om.CloseOrder(orderID, currentPrice, 0, 0)
 			closedOrders = append(closedOrders, orderID)
 		}
 	}
@@ -289,15 +297,20 @@ func (om *OrderManager) GetTotalPnL() float64 {
 }
 
 // calculatePnL calculates the profit/loss for an order
+// 盈亏 = 价格差收益 - 交易手续费 - 资金费率
 func (om *OrderManager) calculatePnL(order *LocalOrder) float64 {
+	var pricePnL float64
 	switch order.OrderType {
 	case OrderTypeLong:
-		return (order.ExitPrice - order.EntryPrice) * order.Quantity
+		pricePnL = (order.ExitPrice - order.EntryPrice) * order.Quantity
 	case OrderTypeShort:
-		return (order.EntryPrice - order.ExitPrice) * order.Quantity
+		pricePnL = (order.EntryPrice - order.ExitPrice) * order.Quantity
 	default:
 		return 0
 	}
+
+	// 减去交易手续费和资金费率
+	return pricePnL - order.TradingFee - order.FundingFee
 }
 
 // calculatePnLPercent calculates the profit/loss percentage for an order
